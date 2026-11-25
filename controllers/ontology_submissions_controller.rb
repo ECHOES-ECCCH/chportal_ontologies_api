@@ -1,8 +1,17 @@
+require 'multi_json'
+
 class OntologySubmissionsController < ApplicationController
   get "/submissions" do
     check_last_modified_collection(LinkedData::Models::OntologySubmission)
-    options = { also_include_views: params["also_include_views"], status: (params["include_status"] || "ANY") }
-    reply retrieve_latest_submissions(options).values
+    options = {
+               also_include_views: params["also_include_views"],
+               status: (params["include_status"] || "ANY")
+    }
+    subs = retrieve_latest_submissions(options)
+    subs = subs.values unless page?
+    # Force to show ontology reviews, notes and projects by default only for this request
+    LinkedData::Models::Ontology.serialize_default(*(LinkedData::Models::Ontology.hypermedia_settings[:serialize_default] + [:reviews, :notes, :projects]))
+    reply subs
   end
 
   ##
@@ -32,6 +41,7 @@ class OntologySubmissionsController < ApplicationController
       reply subs.sort {|a,b| b.submissionId.to_i <=> a.submissionId.to_i }  # descending order of submissionId
     end
 
+    ##
     # Create a new submission for an existing ontology
     post do
       ont = Ontology.find(params["acronym"]).include(Ontology.attributes).first
@@ -63,6 +73,8 @@ class OntologySubmissionsController < ApplicationController
       error 422, "You must provide an existing `submissionId` to patch" if submission.nil?
 
       submission.bring(*OntologySubmission.attributes)
+      params.delete("uploadFilePath")
+      params.delete("diffFilePath")
       populate_from_params(submission, params)
       add_file_to_submission(ont, submission)
 
@@ -70,7 +82,7 @@ class OntologySubmissionsController < ApplicationController
         submission.save
         if (params.keys & REQUIRES_REPROCESS).length > 0 || request_has_file?
           cron = NcboCron::Models::OntologySubmissionParser.new
-          cron.queue_submission(submission, { all: true })
+          cron.queue_submission(submission, {all: true})
         end
       else
         error 422, submission.errors
@@ -88,6 +100,77 @@ class OntologySubmissionsController < ApplicationController
       error 422, "You must provide an existing `submissionId` to delete" if submission.nil?
       submission.delete
       halt 204
+    end
+
+    delete do
+      ont = Ontology.find(params["acronym"]).first
+      error 422, "You must provide an existing ontology `acronym` to delete its submissions" if ont.nil?
+
+      raw = params["ontology_submission_ids"]
+      ids =
+        case raw
+        when Array
+          raw
+        when String
+          raw.split(",")
+        else
+          []
+        end
+
+      ids = ids.map { |v| v.to_s.strip }.reject(&:empty?).map(&:to_i).uniq
+      error 422, "`ontology_submission_ids` must be a non-empty array or comma-separated list" if ids.empty?
+
+      args = { name: "bulk_delete_submissions_#{params['acronym']}", message: "deleting ontology submissions" }
+      process_id = process_long_operation(900, args) do |_args|
+        ont.bring(:submissions)
+        found = ont.submissions.select { |s|
+          s.bring(:submissionId)
+          ids.include?(s.submissionId.to_i)
+        }
+        found_ids = found.map { |s| s.submissionId.to_i }
+        missing = ids - found_ids
+        deleted_ids = []
+
+        if found.respond_to?(:each)
+          errors = []
+          found.each do |s|
+            begin
+              s.delete
+              deleted_ids << s.submissionId.to_i
+            rescue => e
+              errors << { id: (s.respond_to?(:id) ? s.id : nil), error: "#{e.class}: #{e.message}" }
+            end
+          end
+        end
+
+        payload = { deleted_ids: deleted_ids, deleted_count: deleted_ids.size, missing_ids: missing }
+        payload[:errors] = errors if defined?(errors) && errors.any?
+        payload
+      end
+
+      reply 202, { process_id: process_id }
+    end
+
+    # Polling endpoint for the bulk-delete long operation
+    # GET /ontologies/:acronym/submissions/bulk_delete/:process_id
+    get '/bulk_delete/:process_id' do
+      raw = redis.get(params["process_id"])
+      stored = raw.nil? ? nil : MultiJson.load(raw)
+      error 404, "Process id #{params['process_id']} does not exist" if stored.nil?
+
+      # If the job stored "done", report minimal success; if it stored a hash, return it.
+      if stored == "processing"
+        reply 200, { status: "processing" }
+      elsif stored == "done"
+        reply 200, { status: "done" }
+      elsif stored.is_a?(Hash) && stored["errors"]
+        reply 200, stored
+      else
+        # Assume it's the success payload produced in the worker
+        payload = stored.is_a?(Hash) ? stored : {}
+        payload["status"] = "done" unless payload["status"]
+        reply 200, payload
+      end
     end
 
     ##
@@ -131,6 +214,25 @@ class OntologySubmissionsController < ApplicationController
       end
     end
 
+    get '/:ontology_submission_id/diff' do
+      acronym = params["acronym"]
+      submission_attributes = [:submissionId, :submissionStatus, :diffFilePath]
+      ont = Ontology.find(acronym).include(:submissions => submission_attributes).first
+      error 422, "You must provide an existing `acronym` to download" if ont.nil?
+      ont.bring(:viewingRestriction)
+      check_access(ont)
+      ont_restrict_downloads = LinkedData::OntologiesAPI.settings.restrict_download
+      error 403, "License restrictions on download for #{acronym}" if ont_restrict_downloads.include? acronym
+      submission = ont.submission(params['ontology_submission_id'].to_i)
+      error 404, "There is no such submission for download" if submission.nil?
+      file_path = submission.diffFilePath
+      if File.readable? file_path
+        reply submission.parse_diff_report
+      else
+        error 500, "Cannot read submission diff file: #{file_path}"
+      end
+    end
+
     ##
     # Download a submission diff file
     get '/:ontology_submission_id/download_diff' do
@@ -160,5 +262,6 @@ class OntologySubmissionsController < ApplicationController
     end
 
   end
+
 
 end

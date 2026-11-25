@@ -1,7 +1,7 @@
 require 'sinatra/base'
+require 'sinatra/namespace'
+require 'multi_json'
 require 'date'
-require 'rdf'
-require 'uri'
 
 module Sinatra
   module Helpers
@@ -10,7 +10,7 @@ module Sinatra
       ##
       # Escape text for use in html
       def h(text)
-        Rack::Utils.escape_html(text)
+        Rack::Utils.escape_html(text).gsub('/', '&#x2F;')
       end
 
       ##
@@ -24,22 +24,8 @@ module Sinatra
         # Make sure everything is loaded
         if obj.is_a?(LinkedData::Models::Base)
           obj.bring_remaining if obj.exist?
-
-          # Strip out attributes that aren't explicitly declared in the model
           no_writable_attributes = obj.class.attributes(:all) - obj.class.attributes
           params = params.reject { |k, v| no_writable_attributes.include? k.to_sym }
-
-          # Strip out system_controlled attributes
-          restricted = obj.class.hypermedia_settings[:system_controlled]
-          params = params.reject { |k, _| restricted&.include?(k.to_sym) }
-
-          # Handle special-case assignment of `creator`
-          # Some models require a `creator` attribute (e.g., Notes, ProvisionalClass).
-          # Historically this was provided by clients via request params,
-          # but since `creator` is now treated as a system-controlled attribute,
-          # it should be assigned internally (e.g., from `current_user`) and
-          # must not be overwritten or user-defined.#
-          assign_creator_if_applicable(obj)
         end
         params.each do |attribute, value|
           next if value.nil?
@@ -47,7 +33,7 @@ module Sinatra
           # Deal with empty strings for String and URI
           empty_string = value.is_a?(String) && value.empty?
           old_string_value_exists = obj.respond_to?(attribute) && (obj.send(attribute).is_a?(String) || obj.send(attribute).is_a?(RDF::URI))
-          old_string_value_exists ||= obj.respond_to?(attribute) && obj.send(attribute).is_a?(LinkedData::Models::Base)
+          old_string_value_exists = old_string_value_exists || (obj.respond_to?(attribute) && obj.send(attribute).is_a?(LinkedData::Models::Base))
           if old_string_value_exists && empty_string
             value = nil
           elsif empty_string
@@ -90,28 +76,16 @@ module Sinatra
               value.each do |e|
                 e = e.to_h
                 retrieved_value = attr_cls.where(e.symbolize_keys).first
-
                 if retrieved_value
                   retrieved_values << retrieved_value
                 else
-                  val = populate_from_params(attr_cls.new, e.symbolize_keys)
-
-                  if val.valid?
-                    val.save
-                    retrieved_values << val
-                  end
+                  retrieved_values << populate_from_params(attr_cls.new, e.symbolize_keys).save
                 end
               end
             else
               retrieved_values = attr_cls.where(value.to_h.symbolize_keys).to_a
-
               unless retrieved_values
-                val = populate_from_params(attr_cls.new, e.symbolize_keys)
-
-                if val.valid?
-                  val.save
-                  retrieved_values = val
-                end
+                retrieved_values = populate_from_params(attr_cls.new, e.symbolize_keys).save
               end
             end
             value = retrieved_values
@@ -123,14 +97,15 @@ module Sinatra
             value
           elsif attribute_settings && attribute_settings[:enforce] && attribute_settings[:enforce].include?(:uri) && attribute_settings[:enforce].include?(:list)
             # in case its a list of URI, convert all value to IRI
-            value = Array(value).map { |v| RDF::IRI.new(v) }
+            value = value.map { |v| RDF::IRI.new(v) }
           elsif attribute_settings && attribute_settings[:enforce] && attribute_settings[:enforce].include?(:uri)
             # TODO: Remove this awful hack when obj.class.model_settings[:range][attribute] contains RDF::IRI class
-            unless value.nil?
+            if !value.nil?
               # If pass an empty string for an URI : set it as nil.
               value = RDF::IRI.new(value)
             end
           end
+
           # Don't populate naming attributes if they exist
           if obj.class.model_settings[:name_with] != attribute || obj.send(attribute).nil?
             obj.send("#{attribute}=", value) if obj.respond_to?("#{attribute}=")
@@ -185,9 +160,19 @@ module Sinatra
           status = obj
           obj = nil
         end
-        status, obj = response.first, response.last if response.length == 2
-        status, headers, obj = response.first, response[1], response.last if response.length == 3
-        if obj.is_a?(Rack::File) # Avoid the serializer when returning files
+
+        if response.length == 2
+          status = response.first
+          obj = response.last
+        end
+
+        if response.length == 3
+          status = response.first
+          headers = response[1]
+          obj = response.last
+        end
+
+        if obj.is_a?(Rack::Files) || obj.is_a?(Rack::Files::Iterator) # Avoid the serializer when returning files
           super(response)
         else
           super(LinkedData::Serializer.build_response(@env, status: status, headers: headers, ld_object: obj))
@@ -212,7 +197,7 @@ module Sinatra
       # Look for the includes parameter and provide a formatted list of attributes
       def includes_param
         if @params["display"]
-          return @params["display"].split(",").map {|e| e.to_sym}
+          return @params["display"].split(",").map { |e| e.to_sym }
         end
         Array.new
       end
@@ -220,14 +205,14 @@ module Sinatra
       ##
       # Look for the ontologies acronym and give back a formatted list of ontolody id uris
       # This can be called without passing an argument and it will use the values from the current request
-      def ontologies_param(params=nil)
+      def ontologies_param(params = nil)
         params ||= @params
 
         if params["ontologies"]
           # Get list
-          ontologies = params["ontologies"].split(",").map {|o| o.strip}
+          ontologies = params["ontologies"].split(",").map { |o| o.strip }
           # When they aren't URIs, make them URIs
-          ontologies.map! {|o| o.start_with?("http://") ? replace_url_prefix(o) : ontology_uri_from_acronym(o)}
+          ontologies.map! { |o| o.start_with?("http://") ? replace_url_prefix(o) : ontology_uri_from_acronym(o) }
           if ontologies.include? nil
             error 404, "The ontologies parameter `[#{params["ontologies"]}]` includes non-existent acronyms. Notice that acronyms are case sensitive."
           end
@@ -236,7 +221,7 @@ module Sinatra
         Array.new
       end
 
-      def restricted_ontologies(params=nil)
+      def restricted_ontologies(params = nil)
         params ||= @params
 
         found_onts = false
@@ -245,11 +230,11 @@ module Sinatra
           found_onts = onts.length > 0
           Ontology.where.models(onts).include(*Ontology.access_control_load_attrs).all
         else
-          onts = if params["also_include_views"] == "true"
-            Ontology.where.include(Ontology.goo_attrs_to_load()).to_a
+          if params["also_include_views"] == "true"
+            onts = Ontology.where.include(Ontology.goo_attrs_to_load()).to_a
           else
-            Ontology.where.filter(Goo::Filter.new(:viewOf).unbound).include(Ontology.goo_attrs_to_load()).to_a
-                 end
+            onts = Ontology.where.filter(Goo::Filter.new(:viewOf).unbound).include(Ontology.goo_attrs_to_load()).to_a
+          end
 
           found_onts = onts.length > 0
 
@@ -265,23 +250,23 @@ module Sinatra
         return onts
       end
 
-      def restricted_ontologies_to_acronyms(params=nil, onts=nil)
+      def restricted_ontologies_to_acronyms(params = nil, onts = nil)
         onts ||= restricted_ontologies(params)
-        return onts.map {|o| o.acronym }
+        return onts.map { |o| o.acronym }
       end
 
-      def ontologies_param_to_acronyms(params=nil)
+      def ontologies_param_to_acronyms(params = nil)
         ontResourceIds = ontologies_param(params)
-        return ontResourceIds.map { |ontResourceId| ontResourceId.to_s.split('/')[-1]}
+        return ontResourceIds.map { |ontResourceId| ontResourceId.to_s.split('/')[-1] }
       end
 
       ##
       # Get semantic types parameter in the form [semantic_types=T099,T085,T345]
-      def semantic_types_param(params=nil)
+      def semantic_types_param(params = nil)
         params ||= @params
 
         if params["semantic_types"]
-          semanticTypes = params["semantic_types"].split(",").map {|o| o.strip}
+          semanticTypes = params["semantic_types"].split(",").map { |o| o.strip }
           return semanticTypes
         end
         Array.new
@@ -289,21 +274,21 @@ module Sinatra
 
       ##
       # Get cui parameter in the form [cui=C0302369,C0522224,C0176617]
-      def cui_param(params=nil)
+      def cui_param(params = nil)
         params ||= @params
         if params["cui"]
-          cui = params["cui"].split(",").map {|o| o.strip}
+          cui = params["cui"].split(",").map { |o| o.strip }
           return cui
         end
         Array.new
       end
 
       # validates month for 1-12 or 01-09
-      def month_param(params=nil)
+      def month_param(params = nil)
         params ||= @params
         if params["month"]
           month = params["month"].strip
-          if %r{(?<month>^(0[1-9]|[1-9]|1[0-2])$)}x === month
+          if /(?<month>^(0[1-9]|[1-9]|1[0-2])$)/x === month
             return month.to_i.to_s
           end
         end
@@ -311,11 +296,11 @@ module Sinatra
       end
 
       # validates year for starting with 1 or 2 and containing 4 digits
-      def year_param(params=nil)
+      def year_param(params = nil)
         params ||= @params
         if params["year"]
           year = params["year"].strip
-          if %r{(?<year>^([1-2]\d{3})$)}x === year
+          if /(?<year>^([1-2]\d{3})$)/x === year
             return year.to_i.to_s
           end
         end
@@ -355,14 +340,14 @@ module Sinatra
       def ontology_objects_from_params(params = nil)
         ontologies = Set.new(ontologies_param(params))
         all_onts = LinkedData::Models::Ontology.where.include(LinkedData::Models::Ontology.goo_attrs_to_load).to_a
-        all_onts.select {|o| ontologies.include?(o.id.to_s)}
+        all_onts.select { |o| ontologies.include?(o.id.to_s) }
       end
 
       def ontology_uri_acronym_map
         cached_map = naive_expiring_cache_read(__method__)
         return cached_map if cached_map
         map = {}
-        LinkedData::Models::Ontology.where.include(:acronym).all.each {|o| map[o.acronym] = o.id.to_s}
+        LinkedData::Models::Ontology.where.include(:acronym).all.each { |o| map[o.acronym] = o.id.to_s }
         naive_expiring_cache_write(__method__, map)
         map
       end
@@ -371,7 +356,7 @@ module Sinatra
         cached_map = naive_expiring_cache_read(__method__)
         return cached_map if cached_map
         map = {}
-        LinkedData::Models::Ontology.where.include(:acronym).all.each {|o| map[o.id.to_s] = o.acronym}
+        LinkedData::Models::Ontology.where.include(:acronym).all.each { |o| map[o.id.to_s] = o.acronym }
         naive_expiring_cache_write(__method__, map)
         map
       end
@@ -385,25 +370,6 @@ module Sinatra
         uri.valid? ? uri : id
       end
 
-      def create_rdf_uri(uri)
-        return uri if uri.class == RDF::URI
-
-        # Attempt to parse the URI string
-        parsed_uri = URI.parse(uri)
-
-        # Check if the parsed URI has a valid scheme (e.g., http, https)
-        if parsed_uri.scheme && parsed_uri.host
-          # Return a new RDF::URI object if the URI is valid
-          RDF::URI.new(uri)
-        else
-          # Return nil if there is no valid scheme or host
-          nil
-        end
-      rescue URI::InvalidURIError
-        # Return nil if the URI is not valid
-        nil
-      end
-
       ##
       # If the setting is enabled, replace the URL prefix with the proper id prefix
       # EX: http://stagedata.bioontology.org/ontologies/BRO would become http://data.bioontology.org/ontologies/BRO
@@ -411,27 +377,43 @@ module Sinatra
         LinkedData::Models::Base.replace_url_prefix_to_id(id)
       end
 
-      def get_ontology_and_submission
-        ont = Ontology.find(@params["ontology"])
-              .include(:acronym, :administeredBy, :acl, :viewingRestriction)
-              .include(submissions:
-                       [:submissionId, submissionStatus: [:code], ontology: [:acronym], metrics: :classes])
-                .first
-        error(404, "Ontology '#{@params["ontology"]}' not found.") if ont.nil?
+      def retrieve_latest_submissions(options = {})
+        submissions = retrieve_submissions(options)
+
+        latest_submissions = page? ? submissions : {} # latest_submission doest not work with pagination
+        submissions.each do |sub|
+          unless page?
+            next if include_ready?(options) && !sub.ready?
+            next if sub.ontology.nil?
+            latest_submissions[sub.ontology.acronym] ||= sub
+            latest_submissions[sub.ontology.acronym] = sub if sub.submissionId.to_i > latest_submissions[sub.ontology.acronym].submissionId.to_i
+          end
+        end
+        latest_submissions
+      end
+
+      def get_ontology_and_submission(ontology_acronym: nil)
+        acronym = ontology_acronym || @params["ontology"]
+        ont = Ontology.find(acronym)
+                      .include(:acronym, :administeredBy, :acl, :viewingRestriction)
+                      .include(submissions:
+                                 [:submissionId, submissionStatus: [:code], ontology: [:acronym], metrics: :classes])
+                      .first
+        error(404, "Ontology (artefact) '#{acronym}' not found.") if ont.nil?
         check_access(ont) if LinkedData.settings.enable_security # Security check
         submission = nil
         if @params.include? "ontology_submission_id"
           submission = ont.submission(@params[:ontology_submission_id])
           if submission.nil?
             error 404,
-               "You must provide an existing submission ID for the #{@params["acronym"]} ontology"
+                  "You must provide an existing submission (distribution) ID for the #{acronym} ontology (artefact)"
           end
         else
           submission = ont.latest_submission(status: [:RDF])
         end
-        error 404, "Ontology #{@params["ontology"]} submission not found." if submission.nil?
+        error 404, "Ontology (artefact) #{acronym} submission (distribution) not found." if submission.nil?
         if !submission.ready?(status: [:RDF])
-          error 404, "Ontology #{@params["ontology"]} submission #{submission.submissionId} has not been parsed."
+          error 404, "Ontology (artefact) #{acronym} submission (distribution) #{submission.submissionId} has not been parsed."
         end
 
         save_submission_language(submission)
@@ -450,11 +432,72 @@ module Sinatra
         return class_params_include || params_include
       end
 
+      ##
+      # Checks to see if the request has a file attached
+      def request_has_file?
+        @params.any? { |p, v| v.instance_of?(Hash) && v.key?(:tempfile) && v[:tempfile].instance_of?(Tempfile) }
+      end
+
+      ##
+      # Looks for a file that was included as a multipart in a request
+      def file_from_request
+        @params.each_value do |value|
+          if value.is_a?(Hash) && value.key?(:tempfile) && value[:tempfile].instance_of?(Tempfile)
+            return value[:filename], value[:tempfile]
+          end
+        end
+
+        [nil, nil]
+      end
+
+      # Long-operation helper modeled after the original from AdminController#process_long_operation
+      def process_long_operation(timeout, args, &block)
+        process_id = "#{Time.now.to_i}_#{args[:name]}"
+        redis.setex process_id, timeout, MultiJson.dump("processing")
+
+        worker = Proc.new do
+          error = {}
+          begin
+            block.call(args) || {}
+          rescue Exception => e
+            msg = "Error #{args[:message]} - #{e.class}: #{e.message}"
+            puts "#{msg}\n#{e.backtrace.join("\n\t")}"
+            error = { errors: [msg] }
+          end
+          # Store the result (either {errors: [...]} or a success payload)
+          redis.setex process_id, timeout, MultiJson.dump(error.empty? ? "done" : error)
+        end
+
+        # Use a fork like AdminController; set to false for testing if needed
+        fork_process = true
+        if fork_process
+          pid = Process.fork { worker.call }
+          Process.detach(pid)
+        else
+          worker.call
+        end
+
+        process_id
+      end
+
+      def redis
+        Redis.new(host: Annotator.settings.annotator_redis_host, port: Annotator.settings.annotator_redis_port, timeout: 30)
+      end
+
+      def redis_goo
+        Redis.new(host: LinkedData.settings.goo_redis_host, port: LinkedData.settings.goo_redis_port, timeout: 30)
+      end
+
+      def redis_http
+        Redis.new(host: LinkedData.settings.http_redis_host, port: LinkedData.settings.http_redis_port, timeout: 30)
+      end
+      
+
       private
 
       def naive_expiring_cache_write(key, object, timeout = 60)
         @naive_expiring_cache ||= {}
-        @naive_expiring_cache[key] = {timeout: Time.now + timeout, object: object}
+        @naive_expiring_cache[key] = { timeout: Time.now + timeout, object: object }
       end
 
       def naive_expiring_cache_read(key)
@@ -464,7 +507,6 @@ module Sinatra
         return if Time.now > object[:timeout]
         return object[:object]
       end
-
 
       def save_submission_language(submission, language_property = :naturalLanguage)
         request_lang = RequestStore.store[:requested_lang]
@@ -478,22 +520,12 @@ module Sinatra
         collection_natural_language = collection_natural_language.values.flatten if collection_natural_language.is_a?(Hash)
         submissions_language = collection_natural_language.map { |natural_language| natural_language.to_s.split('/').last[0..1] }.compact.first
 
-        RequestStore.store[:requested_lang] =  submissions_language if submissions_language
+        RequestStore.store[:requested_lang] = submissions_language if submissions_language
       end
 
-      # Assigns the current user as the creator if:
-      # - the model responds to `creator`,
-      # - the attribute is marked system-controlled
-      # - and the creator has not yet been set.
-      # This must run after system-controlled params are stripped.
-      def assign_creator_if_applicable(obj)
-        return unless obj.respond_to?(:creator)
-        return unless obj.creator.nil?
-
-        restricted = obj.class.hypermedia_settings[:system_controlled]
-        return unless restricted&.include?(:creator)
-
-        obj.creator = current_user
+      def update_current_user(user)
+        Thread.current[:remote_user] = user
+        env.update("REMOTE_USER" => user)
       end
     end
   end

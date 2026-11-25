@@ -91,13 +91,24 @@ class TestOntologiesController < TestCase
     assert ont["acronym"] = ontology
   end
 
+  def test_user_ontology
+    get "/users/#{@@user}/ontologies"
+    assert last_response.ok?
+
+    ont = MultiJson.load(last_response.body)
+    assert ont.size, 2
+    assert ont.map { |o| o["acronym"] }.sort.include?(@@acronym)
+    assert ont.map { |o| o["acronym"] }.sort.include?(@@view_acronym)
+  end
+
+
   def test_create_ontology
     self.class._delete_onts
     put "/ontologies/#{@@acronym}", @@file_params
     assert last_response.status == 201
 
     delete "/ontologies/#{@@acronym}"
-    post "/ontologies/", @@file_params.merge(acronym: @@acronym)
+    post "/ontologies", @@file_params.merge(acronym: @@acronym)
     assert last_response.status == 201
   end
 
@@ -324,6 +335,72 @@ class TestOntologiesController < TestCase
     assert_equal onto["viewOf"], ont.id.to_s
   end
 
+  def test_detach_a_view
+    view = Ontology.find(@@view_acronym).include(:viewOf).first
+    ont =  view.viewOf
+    refute_nil view
+    refute_nil ont
+
+    remove_view_of = {viewOf: ''}
+    patch "/ontologies/#{@@view_acronym}", MultiJson.dump(remove_view_of), "CONTENT_TYPE" => "application/json"
+
+    assert last_response.status == 204
+
+    get "/ontologies/#{@@view_acronym}"
+    onto = MultiJson.load(last_response.body)
+    assert_nil onto["viewOf"]
+
+
+    add_view_of = {viewOf: @@acronym}
+    patch "/ontologies/#{@@view_acronym}", MultiJson.dump(add_view_of), "CONTENT_TYPE" => "application/json"
+
+    assert last_response.status == 204
+
+    get "/ontologies/#{@@view_acronym}"
+    onto = MultiJson.load(last_response.body)
+    assert_equal onto["viewOf"], ont.id.to_s
+  end
+
+  def test_ontology_agents
+    ontologies_and_submissions = create_ontologies_and_submissions(ont_count: 2, submission_count: 1, process_submission: true)
+    submission1 = ontologies_and_submissions[2].first.submissions.last
+    submission2 = ontologies_and_submissions[2].last.submissions.last
+
+    ontology_acronym1 = ontologies_and_submissions[1].first
+    ontology_acronym2 = ontologies_and_submissions[1].last
+
+    submission1.bring(*OntologySubmission.agents_attrs)
+    submission2.bring(*OntologySubmission.agents_attrs)
+
+    # To insure that we don't have duplicated agents in the response
+    agent_syphax = _create_agent(name: 'Syphax', type: 'person')
+
+    submission1.publisher = [_create_agent(name: 'Bilel', type: 'person'), agent_syphax]
+    submission1.hasContributor = [_create_agent(name: 'Clement', type: 'person'), agent_syphax]
+
+    submission2.publisher = [_create_agent(name: 'Imad', type: 'person'), _create_agent(name: 'Serine', type: 'person')]
+
+    submission1.save
+    submission2.save
+
+
+    get "/ontologies/#{ontology_acronym1}/agents"
+
+    response = MultiJson.load(last_response.body)
+    assert_equal response.length, 3
+    response.each do |r|
+      assert_includes ['Bilel', 'Syphax', 'Clement'], r["name"]
+    end
+
+    get "/ontologies/#{ontology_acronym2}/agents"
+
+    response = MultiJson.load(last_response.body)
+    assert_equal response.length, 2
+    response.each do |r|
+      assert_includes ['Imad', 'Serine'], r["name"]
+    end
+  end
+
   private
 
   def start_server
@@ -353,6 +430,16 @@ class TestOntologiesController < TestCase
   def check400(response)
     assert response.status >= 400
     assert MultiJson.load(response.body)["errors"]
+  end
+
+  def _create_agent(name: 'name', type: 'person')
+    agent = LinkedData::Models::Agent.new({
+      agentType: type,
+      name: name,
+      creator: User.find('tim').first
+    })
+    agent.save
+    agent
   end
 
 end

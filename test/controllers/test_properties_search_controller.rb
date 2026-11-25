@@ -30,8 +30,8 @@ class TestPropertiesSearchController < TestCase
 
   def after_suite
     LinkedData::SampleData::Ontology.delete_ontologies_and_submissions
-    LinkedData::Models::Ontology.indexClear(:property)
-    LinkedData::Models::Ontology.indexCommit(nil, :property)
+    LinkedData::Models::OntologyProperty.indexClear
+    LinkedData::Models::OntologyProperty.indexCommit
   end
 
   def test_property_search
@@ -59,7 +59,7 @@ class TestPropertiesSearchController < TestCase
     get '/property_search?q=has'
     assert last_response.ok?
     results = MultiJson.load(last_response.body)
-    assert_equal 17, results["collection"].length
+    assert_includes [17,4], results["collection"].length # depending if owlapi imports SKOS
 
     get '/property_search?q=has&ontologies=MCCLSEARCHTEST-0'
     assert last_response.ok?

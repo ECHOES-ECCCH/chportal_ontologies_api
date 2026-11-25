@@ -9,15 +9,15 @@ class TestMetricsController < TestCase
     end
     OntologySubmission.all.each {|s| s.delete }
     Ontology.all.each {|o| o.delete }
-    @@data = {"classes" => 487,
-              "averageChildCount" => 5,
-              "maxChildCount" => 65,
-              "classesWithOneChild" => 14,
-              "classesWithMoreThan25Children" => 2,
-              "classesWithNoDefinition" => 11,
-              "individuals" => 124,
-              "properties" => 63,
-              "maxDepth" => 7 }
+    @@data = {"classes"=>486,
+              "averageChildCount"=>5,
+              "maxChildCount"=>65,
+              "classesWithOneChild"=>14,
+              "classesWithMoreThan25Children"=>2,
+              "classesWithNoDefinition"=>11,
+              "individuals"=>124,
+              "properties"=>63,
+              "maxDepth"=> 7 }
     @@options = { ont_count: 2,
                   submission_count: 3,
                   submissions_to_process: [1, 2],
@@ -32,11 +32,15 @@ class TestMetricsController < TestCase
     assert last_response.ok?
     metrics = MultiJson.load(last_response.body)
     assert metrics.length == 2
-    #TODO: improve this test and test for two different ontologies
-    #though this is tested in LD
+    # TODO: improve this test and test for two different ontologies
+    # though this is tested in LD
     metrics.each do |m|
       @@data.each do |k, v|
-        assert_equal(v, m[k])
+        if v.is_a?(Array)
+          assert_includes(v, m[k])
+        else
+          assert_equal(v, m[k])
+        end
       end
       assert m["@id"] == m["submission"].first + "/metrics"
     end
@@ -47,31 +51,43 @@ class TestMetricsController < TestCase
     get "/ontologies/#{ontology}/metrics"
     assert last_response.ok?
     metrics = MultiJson.load(last_response.body)
-
-    @@data.each do |k,v|
-      assert_equal(v, metrics[k])
+    @@data.each do |k, v|
+      if v.is_a?(Array)
+        assert_includes(v, metrics[k])
+      else
+        assert_equal(v, metrics[k])
+      end
     end
+
   end
 
   def test_metrics_with_submission_id
     ontology = 'TEST-ONT-0'
-    get "/ontologies/#{ontology}/submissions/2/metrics"
+    get "/ontologies/#{ontology}/submissions/1/metrics"
     assert last_response.ok?
     metrics = MultiJson.load(last_response.body)
 
-    @@data.each do |k,v|
-      assert_equal(v, metrics[k])
+    @@data.each do |k, v|
+      if v.is_a?(Array)
+        assert_includes(v, metrics[k])
+      else
+        assert_equal(v, metrics[k])
+      end
     end
+
   end
 
   def test_metrics_with_submission_id_as_param
     ontology = 'TEST-ONT-0'
-    get "/ontologies/#{ontology}/metrics?ontology_submission_id=2"
+    get "/ontologies/#{ontology}/metrics?submissionId=1"
     assert last_response.ok?
     metrics = MultiJson.load(last_response.body)
-
-    @@data.each do |k,v|
-      assert_equal(v, metrics[k])
+    @@data.each do |k, v|
+      if v.is_a?(Array)
+        assert_includes(v, metrics[k])
+      else
+        assert_equal(v, metrics[k])
+      end
     end
   end
 

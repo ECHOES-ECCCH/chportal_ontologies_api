@@ -1,49 +1,55 @@
-application = 'ontologies_api'
-app_path = "/opt/ontoportal/#{application}"
-working_directory "#{app_path}/current/"
+application  = 'ontologies_api'
+app_path = "/srv/ontoportal/#{application}"
+current_version_path = "#{app_path}/current"
+pid_file_path = 'tmp/pids/unicorn.pid'
 
-# Configure the number of Unicorn worker processes:
-# - We set the worker count to 1.2x the number of CPU cores, which balances concurrency
-#   with memory use for typical BioPortal loads.
-# - BioPortal hosts many large ontologies and handles higher API traffic than a typical appliance,
-#   so this multiplier is tuned slightly above 1.0 to improve throughput under moderate to heavy load.
-# - Lighter deployments (e.g., single-ontology or low-traffic appliances) may benefit from increasing
-#   this multiplier further (e.g., 1.5–2.0x), depending on available RAM and expected concurrency.
-# - The `.max(2)` ensures we always start at least 2 workers, even on single-core hosts.
-worker_processes [(Etc.nprocessors * 1.2).to_i, 2].max
+if Dir.exists?(current_version_path)
+  app_socket_path = app_path + '/shared/tmp/sockets/unicorn.sock'
+  app_gemfile_path = "#{current_version_path}/Gemfile"
+  user = 'ontoportal'
+else
+  current_version_path = app_path
+  app_gemfile_path = "#{app_path}/Gemfile"
+  app_socket_path = app_path + '/tmp/sockets/unicorn.sock'
+  user = 'root'
+end
 
-# Match Nginx's default timeout
-timeout 90
+working_directory current_version_path
+worker_processes 8
+timeout 300
 preload_app true
+user user, user
 
-# This is a systemd-managed service. The /run/unicorn directory is created
-# and managed by systemd's RuntimeDirectory=unicorn directive.
-# user 'op-backend', 'opdata'
+stderr_path 'log/unicorn.stderr.log'
+stdout_path 'log/unicorn.stdout.log'
 
-pid '/run/unicorn/unicorn.pid'
 
-stderr_path '/var/log/ontoportal/ontologies_api/unicorn.stderr.log'
-stdout_path '/var/log/ontoportal/ontologies_api/unicorn.stdout.log'
+require 'fileutils'
+[pid_file_path, app_socket_path].each do |file_path|
+  directory_path = File.dirname(file_path)
+  FileUtils.mkdir_p(directory_path) unless Dir.exist?(File.dirname(file_path))
+end
 
-# Listen on a Unix domain socket for fast, local communication with the nginx reverse proxy.
-# - This is the standard production setup for BioPortal and OntoPortal appliances.
-# - nginx connects to this socket (defined in its upstream config) to proxy HTTP requests to Unicorn.
-# - The socket path is located in the systemd-managed runtime directory (/run/unicorn),
-#   which is automatically cleaned up on reboot.
-listen '/run/unicorn/unicorn.sock', backlog: 512
 
-# Optional TCP listener for development or debugging (e.g., curl access without nginx):
-# - Not enabled in production.
-# listen 8087, backlog: 256
 
-# Ensure Unicorn picks up the correct Gemfile after a rolling restart:
+pid  pid_file_path
+# Listen on both fast-failing unix data socket (for nginx) & a backloggable TCP connection
+listen app_socket_path, :backlog => 1024
+#listen 8087, :backlog => 256
+
+# Make sure unicorn is using current gems after rolling restarts
 before_exec do |server|
-  ENV['BUNDLE_GEMFILE'] = "#{app_path}/current/Gemfile"
+  ENV['BUNDLE_GEMFILE'] =  app_gemfile_path
 end
 
 before_fork do |server, worker|
+  # the following is highly recomended for Rails + "preload_app true"
+  # as there's no need for the master process to hold a connection
+  defined?(ActiveRecord::Base) and ActiveRecord::Base.connection.disconnect!
+
   ##
   # When sent a USR2, Unicorn will suffix its pidfile with .oldbin and
+  # immediately start loading up a new version of itself (loaded with a new
   # version of our app). When this new Unicorn is completely loaded
   # it will begin spawning workers. The first worker spawned will check to
   # see if an .oldbin pidfile exists. If so, this means we've just booted up
@@ -54,7 +60,7 @@ before_fork do |server, worker|
 
   old_pid = "#{server.config[:pid]}.oldbin"
 
-  if File.exist?(old_pid) && server.pid != old_pid
+  if File.exists?(old_pid) && server.pid != old_pid
     begin
       sig = (worker.nr + 1) >= server.worker_processes ? :QUIT : :TTOU
       Process.kill(sig, File.read(old_pid).to_i)
@@ -68,11 +74,8 @@ after_fork do |server, worker|
   # Unicorn master loads the app then forks off workers - because of the way
   # Unix forking works, we need to make sure we aren't using any of the parent's
   # sockets, e.g. db connection
-  #
-  # the following is highly recomended for Rails + "preload_app true"
-  # as there's no need for the master process to hold a connection
-  defined?(ActiveRecord::Base) and ActiveRecord::Base.connection.disconnect!
 
+  defined?(ActiveRecord::Base) and ActiveRecord::Base.establish_connection
   # Redis and Memcached would go here but their connections are established
   # on demand, so the master never opens a socket
 end

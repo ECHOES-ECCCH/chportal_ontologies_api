@@ -10,7 +10,7 @@ module Sinatra
         if params[:cls] && !params[:cls].start_with?("http")
           notation_lookup = LinkedData::Models::Class.where(
             notation: RDF::Literal.new(params[:cls], :datatype => RDF::XSD.string))
-                                                     .in(submission).first
+            .in(submission).first
 
           if notation_lookup
             cls_uri = notation_lookup.id
@@ -18,7 +18,7 @@ module Sinatra
           end
           prefix_lookup = LinkedData::Models::Class.where(
             prefixIRI: RDF::Literal.new(params[:cls], :datatype => RDF::XSD.string))
-                                                   .in(submission).first
+              .in(submission).first
           if prefix_lookup
             cls_uri = prefix_lookup.id
             return cls_uri
@@ -67,7 +67,7 @@ module Sinatra
         extra_include << :isInActiveCollection if load_attrs.include?(:memberOf)
 
         cls.load_computed_attributes(to_load: extra_include ,
-                                     options: {schemes: concept_schemes, collections: concept_collections})
+                                 options: {schemes: concept_schemes, collections: concept_collections})
 
 
         unless load_children.nil?

@@ -4,6 +4,7 @@ class TestSlicesHelper < TestCaseHelpers
 
   def before_suite
     self.backend_4s_delete
+    LinkedData::Models::Class.indexClear
 
     @@orig_slices_setting = LinkedData.settings.enable_slices
     LinkedData.settings.enable_slices = true
@@ -73,6 +74,31 @@ class TestSlicesHelper < TestCaseHelpers
     results = MultiJson.load(last_response.body)["collection"]
     group_ids = @@group.ontologies.map {|o| o.id.to_s}
     assert results.all? {|r| group_ids.include?(r["links"]["ontology"])}
+  end
+
+  def test_mappings_slices
+    LinkedData::Mappings.create_mapping_counts(Logger.new(TestLogFile.new))
+
+    get "/mappings/statistics/ontologies"
+    
+    expected_result_without_slice = ["PARSED-0",
+      "PARSED-1",
+      "http://data.bioontology.org/metadata/ExternalMappings",
+      "http://data.bioontology.org/metadata/InterportalMappings/agroportal",
+      "http://data.bioontology.org/metadata/InterportalMappings/ncbo",
+      "http://data.bioontology.org/metadata/InterportalMappings/sifr"]
+
+    assert_equal expected_result_without_slice, MultiJson.load(last_response.body).keys.sort
+
+    get "http://#{@@group_acronym}/mappings/statistics/ontologies"
+
+    expected_result_with_slice = ["PARSED-0",
+      "http://data.bioontology.org/metadata/ExternalMappings",
+      "http://data.bioontology.org/metadata/InterportalMappings/agroportal",
+      "http://data.bioontology.org/metadata/InterportalMappings/ncbo",
+      "http://data.bioontology.org/metadata/InterportalMappings/sifr"]
+
+    assert_equal expected_result_with_slice, MultiJson.load(last_response.body).keys.sort
   end
 
   private

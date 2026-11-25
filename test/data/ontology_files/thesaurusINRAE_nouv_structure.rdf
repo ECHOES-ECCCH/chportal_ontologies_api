@@ -30,7 +30,7 @@
 <owl:NamedIndividual rdf:about="http://aims.fao.org/aos/agrovoc/xl_tr_1331561625299">
         <rdf:type rdf:resource="http://www.w3.org/2008/05/skos-xl#Label"/>
         <skos:notation rdf:datatype="http://aims.fao.org/aos/agrovoc/AgrovocCode">1331561625299</skos:notation>
-        <skos-xl:literalForm xml:lang="tr">aktivite</skos-xl:literalForm>
+        <skos-xl:literalForm >aktivite</skos-xl:literalForm>
         <terms:created rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime">2012-03-12T22:13:45Z</terms:created>
         <terms:modified rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime">2017-09-22T14:09:06Z</terms:modified>
         <void:inDataset rdf:resource="http://aims.fao.org/aos/agrovoc/void.ttl#Agrovoc"/>

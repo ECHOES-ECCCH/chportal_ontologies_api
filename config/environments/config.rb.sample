@@ -18,9 +18,19 @@ REDIS_PERSISTENT_HOST = ENV.include?("REDIS_PERSISTENT_HOST") ? ENV["REDIS_PERSI
 REDIS_PORT            = ENV.include?("REDIS_PORT")            ? ENV["REDIS_PORT"]            : 6379
 REPORT_PATH           = ENV.include?("REPORT_PATH")           ? ENV["REPORT_PATH"]           : "./test/ontologies_report.json"
 REPOSITORY_FOLDER     = ENV.include?("REPOSITORY_FOLDER")     ? ENV["REPOSITORY_FOLDER"]     : "./test/data/ontology_files/repo"
-REST_URL_PREFIX       = ENV.include?("REST_URL_PREFIX")       ? ENV["REST_URL_PREFIX"]       : "http://localhost:9393"
-SOLR_PROP_SEARCH_URL  = ENV.include?("SOLR_PROP_SEARCH_URL")  ? ENV["SOLR_PROP_SEARCH_URL"]  : "http://localhost:8983/solr/prop_search_core1"
-SOLR_TERM_SEARCH_URL  = ENV.include?("SOLR_TERM_SEARCH_URL")  ? ENV["SOLR_TERM_SEARCH_URL"]  : "http://localhost:8983/solr/term_search_core1"
+REST_URL_PREFIX       = ENV.include?("REST_URL_PREFIX")       ? ENV["REST_URL_PREFIX"]       : ENV["API_URL"] || "http://localhost:9393"
+SOLR_PROP_SEARCH_URL  = ENV.include?("SOLR_PROP_SEARCH_URL")  ? ENV["SOLR_PROP_SEARCH_URL"]  : "http://localhost:8983/solr"
+SOLR_TERM_SEARCH_URL  = ENV.include?("SOLR_TERM_SEARCH_URL")  ? ENV["SOLR_TERM_SEARCH_URL"]  : "http://localhost:8983/solr"
+
+$SENTRY_DSN = ENV.include?("SENTRY_DSN") ? ENV["SENTRY_DSN"] : nil
+begin
+  # For prefLabel extract main_lang first, or anything if no main found.
+  # For other properties only properties with a lang that is included in main_lang are used
+  Goo.main_languages = ["en", "fr"]
+  Goo.use_cache = false
+rescue NoMethodError
+  puts "(CNFG) >> Goo.main_lang not available"
+end
 
 LinkedData.config do |config|
   config.goo_backend_name              = GOO_BACKEND_NAME.to_s
@@ -39,7 +49,80 @@ LinkedData.config do |config|
   config.property_search_server_url    = SOLR_PROP_SEARCH_URL.to_s
   config.replace_url_prefix            = true
   config.rest_url_prefix               = REST_URL_PREFIX.to_s
+  config.sparql_endpoint_url = "http://sparql.bioontology.org"
+  config.repository_folder            = REPOSITORY_FOLDER.to_s
 #  config.enable_notifications          = false
+
+   # SPARQL logging
+   config.log_file = './sparql.log'
+   config.logging = false
+
+    config.interportal_hash = {
+      "agroportal" => {
+        "api" => "http://data.agroportal.lirmm.fr",
+        "ui" => "http://agroportal.lirmm.fr",
+        "apikey" => "1cfae05f-9e67-486f-820b-b393dec5764b"
+      },
+      "ncbo" => {
+        "api" => "http://data.bioontology.org",
+        "apikey" => "4a5011ea-75fa-4be6-8e89-f45c8c84844e",
+        "ui" => "http://bioportal.bioontology.org",
+      },
+      "sifr" => {
+        "api" => "http://data.bioportal.lirmm.fr",
+        "ui" => "http://bioportal.lirmm.fr",
+        "apikey" => "1cfae05f-9e67-486f-820b-b393dec5764b"
+      }
+    }
+    config.oauth_providers = {
+      github: {
+        check: :access_token,
+        link: 'https://api.github.com/user'
+      },
+      keycloak: {
+        check: :jwt_token,
+        cert: 'KEYCLOAK_SECRET_KEY'
+      },
+      orcid: {
+        check: :access_token,
+        link: 'https://pub.orcid.org/v3.0/me'
+      },
+      google: {
+        check: :access_token,
+        link: 'https://www.googleapis.com/oauth2/v3/userinfo'
+      }
+    }
+        config.ui_name                       = 'Bioportal'
+        config.title                         = 'NCBO BioPortal'
+        config.description                   = "The world's most comprehensive repository of biomedical ontologies "
+        config.color                         = '#234979'
+        config.logo                          = ''
+        config.fundedBy                      = [
+            {
+              img_src: 'https://identity.stanford.edu/wp-content/uploads/sites/3/2020/07/block-s-right.png',
+              url: 'https://www.stanford.edu',
+
+            },
+            {
+              img_src: 'https://ontoportal.org/images/logo.png',
+              url: 'https://ontoportal.org/',
+            }
+        ]
+        config.federated_portals = {
+              'agroportal' => {
+                api: 'http://data.agroportal.lirmm.fr',
+                ui: 'http://agroportal.lirmm.fr',
+                apikey: '1cfae05f-9e67-486f-820b-b393dec5764b',
+                color: '#1e2251'
+              },
+              'bioportal' => {
+                      api: 'http://data.bioontology.org',
+                      ui: 'http://bioportal.bioontology.org',
+                      apikey: '4a5011ea-75fa-4be6-8e89-f45c8c84844e',
+                      color: '#234979'
+               },
+
+        }
 end
 
 Annotator.config do |config|
