@@ -4,14 +4,14 @@ class TestInstancesController < TestCase
 
   def before_suite
     LinkedData::SampleData::Ontology.create_ontologies_and_submissions({
-                                                                         process_submission: true,
-                                                                         process_options: { process_rdf: true, extract_metadata: false, generate_missing_labels: false},
-                                                                         acronym: 'XCT-TEST-INST',
-                                                                         name: 'XCT-TEST-INST',
-                                                                         file_path: './test/data/ontology_files/XCTontologyvtemp2.owl',
-                                                                         ont_count: 1,
-                                                                         submission_count: 1
-                                                                       })
+      process_submission: true,
+      process_options: { process_rdf: true, extract_metadata: false, generate_missing_labels: false},
+      acronym: 'XCT-TEST-INST',
+      name: 'XCT-TEST-INST',
+      file_path: './test/data/ontology_files/XCTontologyvtemp2.owl',
+      ont_count: 1,
+      submission_count: 1
+    })
   end
 
 
@@ -95,7 +95,7 @@ class TestInstancesController < TestCase
       assert last_response.ok?
       instances = MultiJson.load(last_response.body)['collection']
       instances.map! { |inst| inst["@id"] }
-      assert_equal known_instances[cls_id].sort, instances.sort
+      assert_equal known_instances[cls_id].sort, instances.sort 
     end
   end
 

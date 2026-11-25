@@ -80,7 +80,6 @@ class TestProvisionalRelationsController < TestCase
   private
 
   def create_relation(targetCls, relType)
-    env("REMOTE_USER", @@test_user)
     rel = {
         creator: @@test_user.id.to_s,
         source: @@test_pc.id.to_s,

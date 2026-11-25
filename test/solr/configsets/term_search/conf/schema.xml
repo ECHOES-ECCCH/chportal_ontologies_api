@@ -156,9 +156,7 @@
     <dynamicField name="synonymSuggestNgram_*" type="text_suggest_ngram" indexed="true" stored="true" omitNorms="true" multiValued="true" />
 
 
-    <field name="notation"              type="string_ci"       indexed="true"  stored="true"  multiValued="false" />
-    <field name="oboId"                 type="string_ci"          indexed="true"  stored="true"  multiValued="false" />
-    <field name="idAcronymMatch"        type="boolean"            indexed="true"  stored="true"  multiValued="false" default="false"/>
+    <field name="notation"              type="text_general"       indexed="true"  stored="true"  multiValued="false" />
 
     <field name="definition" type="string" indexed="true" stored="true" multiValued="true" />
     <dynamicField name="definition_*" type="string" indexed="true" stored="true" multiValued="true" />

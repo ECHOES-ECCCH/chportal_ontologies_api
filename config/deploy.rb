@@ -1,9 +1,5 @@
-# config valid only for Capistrano 3
-
-APP_PATH = '/opt/ontoportal'
-
-set :author, 'ncbo'
-set :application, 'ontologies_api'
+set :author, "ontoportal-lirmm"
+set :application, "ontologies_api"
 set :repo_url, "https://github.com/#{fetch(:author)}/#{fetch(:application)}.git"
 
 set :deploy_via, :remote_cache
@@ -12,7 +8,7 @@ set :deploy_via, :remote_cache
 # ask :branch, proc { `git rev-parse --abbrev-ref HEAD`.chomp }
 
 # Default deploy_to directory is /var/www/my_app
-set :deploy_to, "#{APP_PATH}/#{fetch(:application)}"
+set :deploy_to, "/opt/ontoportal/#{fetch(:application)}"
 
 # Default value for :scm is :git
 # set :scm, :git
@@ -21,33 +17,46 @@ set :deploy_to, "#{APP_PATH}/#{fetch(:application)}"
 # set :format, :pretty
 
 # Default value for :log_level is :debug
-# set :log_level, :debug
+set :log_level, :error
 
 # Default value for :pty is false
 # set :pty, true
 
 # Default value for :linked_files is []
-# set :linked_files, %w{config/database.yml}
+append :linked_files, 'config/unicorn.rb', 'config/environments/appliance.rb', 'config/environments/site_config.rb'
 
 # Default value for linked_dirs is []
 # set :linked_dirs, %w{log tmp/pids tmp/cache tmp/sockets vendor/bundle public/system}
 set :linked_dirs, %w{log vendor/bundle tmp/pids tmp/sockets public/system}
 
-# rbenv
-set :rbenv_type, :system
-set :rbenv_ruby, File.read('.ruby-version').strip
-# set :rbenv_ruby, '2.2.5'
-# set :rbenv_roles, :all # default value
-
-# do not use sudo
-set :use_sudo, false
-# required for restarting unicorn with sudo
-set :pty, true
 # Default value for default_env is {}
-# set :default_env, { path: "/opt/ruby/bin:$PATH" }
+set :default_env, {
+  'PATH' => "/usr/local/rbenv/shims:/usr/local/rbenv/bin:/usr/bin:$PATH"
+}
 
 # Default value for keep_releases is 5
 set :keep_releases, 5
+set :config_folder_path, "#{fetch(:application)}/#{fetch(:stage)}"
+
+# set bundle options
+set :bundle_flags, "--verbose"
+
+# If you want to restart using `touch tmp/restart.txt`, add this to your config/deploy.rb:
+
+# SSH_JUMPHOST = ENV.include?('SSH_JUMPHOST') ? ENV['SSH_JUMPHOST'] : 'jumpbox.hostname.com'
+# SSH_JUMPHOST_USER = ENV.include?('SSH_JUMPHOST_USER') ? ENV['SSH_JUMPHOST_USER'] : 'username'
+# JUMPBOX_PROXY = "#{SSH_JUMPHOST_USER}@#{SSH_JUMPHOST}"
+
+set :ssh_options, {
+  user: 'ontoportal',
+  # forward_agent: 'true',
+  # keys: %w(config/deploy_id_rsa),
+  # auth_methods: %w(publickey),
+  # proxy: Net::SSH::Proxy::Command.new("ssh #{JUMPBOX_PROXY} -W %h:%p")
+}
+
+# private git repo for configuraiton
+# PRIVATE_CONFIG_REPO = ENV.include?('PRIVATE_CONFIG_REPO') ? ENV['PRIVATE_CONFIG_REPO'] : 'https://your_github_pat_token@github.com/your_organization/ontoportal-configs.git'
 
 # inspired by http://nathaniel.talbott.ws/blog/2013/03/14/post-deploy-smoke-tests/
 desc 'Run smoke test'
@@ -75,7 +84,6 @@ task :smoke_test do
   end
 end
 
-
 namespace :deploy do
 
   desc 'Incorporate the private repository content'
@@ -83,10 +91,10 @@ namespace :deploy do
   # or get config from local directory if LOCAL_CONFIG_PATH env var is set
   task :get_config do
     if defined?(PRIVATE_CONFIG_REPO)
-      TMP_CONFIG_PATH = "/tmp/#{SecureRandom.hex(15)}"
+      TMP_CONFIG_PATH = "/tmp/#{SecureRandom.hex(15)}".freeze
       on roles(:app) do
         execute "git clone -q #{PRIVATE_CONFIG_REPO} #{TMP_CONFIG_PATH}"
-        execute "rsync -av #{TMP_CONFIG_PATH}/#{fetch(:application)}/ #{release_path}/"
+        execute "rsync -av #{TMP_CONFIG_PATH}/#{fetch(:config_folder_path)}/ #{release_path}/"
         execute "rm -rf #{TMP_CONFIG_PATH}"
       end
     elsif defined?(LOCAL_CONFIG_PATH)
@@ -99,24 +107,22 @@ namespace :deploy do
   desc 'Restart application'
   task :restart do
     on roles(:app), in: :sequence, wait: 5 do
-    # Your restart mechanism here, for example:
-    # execute :touch, release_path.join('tmp/restart.txt')
-    execute 'sudo systemctl restart unicorn'
-    execute 'sleep 5'
+      # Your restart mechanism here, for example:
+      # execute :touch, release_path.join('tmp/restart.txt')
+      execute 'sudo systemctl restart unicorn.service'
+      execute 'sleep 5'
     end
   end
 
-  after :publishing, :get_config
-  after :get_config, :restart
-  # after :deploy, :smoke_test
-  after :restart, "newrelic:notice_deployment"
+  after :updating, :get_config
+  after :publishing, :restart
+  after :restart, :clear_cache 
 
-  after :restart, :clear_cache do
-    on roles(:web), in: :groups, limit: 3, wait: 10 do
-      # Here we can do anything such as:
-      # within release_path do
-      #   execute :rake, 'cache:clear'
-      # end
+  desc 'Clear the cache'
+  task :clear_cache do
+    on roles(:app), in: :sequence, wait: 5 do
+        execute 'sudo opclearcaches'
     end
   end
+
 end

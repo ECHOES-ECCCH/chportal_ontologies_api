@@ -6,24 +6,20 @@ class ClassesController < ApplicationController
     get do
       includes_param_check
       ont, submission = get_ontology_and_submission
-      cls_count = submission.class_count(LOGGER)
-      error 403, "Unable to display classes due to missing metrics for #{submission.id.to_s}. Please contact the administrator." if cls_count < 0
 
-      attributes, page, size, order_by_hash, bring_unmapped_needed = settings_params(LinkedData::Models::Class)
+      attributes, page, size, order_by_hash = settings_params(LinkedData::Models::Class).first(4)
       check_last_modified_segment(LinkedData::Models::Class, [ont.acronym])
 
       index = LinkedData::Models::Class.in(submission)
       if order_by_hash
         index = index.order_by(order_by_hash)
-        cls_count = nil
         # Add index here when, indexing fixed
         # index_name = 'classes_sort_by_date'
         # index = index.index_as(index_name)
         # index = index.with_index(index_name)
       end
-
-      page_data = index
-      page_data = page_data.include(attributes).page(page, size).page_count_set(cls_count).all
+ 
+      page_data = index.include(attributes).page(page, size).all
       reply page_data
     end
 
@@ -85,7 +81,7 @@ class ClassesController < ApplicationController
       end
 
       unmapped = ld.delete(:properties) ||
-                 (includes_param && includes_param.include?(:all))
+        (includes_param && includes_param.include?(:all))
 
       ld << :memberOf if includes_param.include?(:all)
 
@@ -130,7 +126,7 @@ class ClassesController < ApplicationController
       display_attrs = [:prefLabel, :hasChildren, :children, :obsolete, :subClassOf]
       display_attrs += LinkedData::Models::Class.concept_is_in_attributes if submission.skos?
       request_display(display_attrs.join(','))
-      extra_include = [:hasChildren, :isInActiveScheme, :isInActiveCollection]
+      extra_include = [:hasChildren, :isInActiveScheme, :isInActiveScheme]
       if sort
         roots = submission.roots_sorted(extra_include, concept_schemes: concept_schemes, concept_collections: concept_collections)
         root_tree = cls.tree_sorted(concept_schemes: concept_schemes, concept_collections: concept_collections, roots: roots)
@@ -202,7 +198,7 @@ class ClassesController < ApplicationController
       request_display(ld.join(','))
 
       page_data = submission.children(cls, includes_param: includes_param, concept_schemes: concept_schemes,
-                                      concept_collections: concept_collections, page: page, size: size)
+                                           concept_collections: concept_collections, page: page, size: size)
 
       reply page_data
     end

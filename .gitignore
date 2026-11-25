@@ -16,6 +16,7 @@ logs/**
 .tags*
 cache/**
 vendor/bundle/*
+ontologies_api.iml
 
 # YARD artifacts
 .yardoc
@@ -31,11 +32,10 @@ bin/**
 
 # Support local configs
 config/environments/*
-!config/environments/config.rb
+!config/environments/development.rb.sample
 !config/environments/config.rb.sample
 
 #ignore capistrano deployment
-config/deploy/*
 config/*.p12
 
 # Ignore generated test data
@@ -44,9 +44,6 @@ test/data/ontology_files/repo/**/*
 
 # Ignore jEnv
 .java-version
-
-# Ignore Byebug
-.byebug_history
 
 # Ignore RubyMine editor files
 .idea
@@ -60,7 +57,7 @@ test/data/ontology_files/repo/**/*
 
 config/environments/console.rb
 
-config/environments/stage.rb
+config/environments/development.rb.sample
 
 config/environments/benchmark.rb
 
@@ -71,3 +68,5 @@ test/data/ontology_files/catalog-v001.xml
 create_permissions.log
 
 ontologies_api.iml
+
+.env

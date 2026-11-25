@@ -138,7 +138,7 @@ module Sinatra
         filters.drop(1).each do |k, v|
           filter = filter.or(Goo::Filter.new(k).regex(v))
         end
-
+        
         query.filter(filter)
       end
 

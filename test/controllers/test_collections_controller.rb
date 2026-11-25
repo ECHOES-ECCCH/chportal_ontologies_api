@@ -5,6 +5,7 @@ class TestCollectionsController < TestCase
   def before_suite
     LinkedData::SampleData::Ontology.create_ontologies_and_submissions({
       process_submission: true,
+      process_options: {process_rdf: true, extract_metadata: false},
       acronym: 'INRAETHES',
       name: 'INRAETHES',
       file_path: './test/data/ontology_files/thesaurusINRAE_nouv_structure.rdf',

@@ -1,3 +1,5 @@
+require 'time'
+
 class OntologiesController < ApplicationController
 
   namespace "/ontologies" do
@@ -33,7 +35,6 @@ class OntologiesController < ApplicationController
       error 404, "You must provide a valid `acronym` to retrieve an ontology" if ont.nil?
       include_status = params["include_status"]
       ont.bring(:acronym, :submissions)
-
       if include_status
         latest = ont.latest_submission(status: include_status.to_sym)
       else
@@ -64,6 +65,32 @@ class OntologiesController < ApplicationController
       error 404, "Ontology #{params["acronym"]} is not configured to be remotely pulled" unless latest.remote_pulled?
       NcboCron::Models::OntologySubmissionParser.new.queue_submission(latest, actions)
       LOGGER.info "Ontology #{params['acronym']} has been queued for pull and processing"
+      halt 204
+    end
+
+    ##
+    # Update latest submission of an ontology
+    REQUIRES_REPROCESS = ["prefLabelProperty", "definitionProperty", "synonymProperty", "authorProperty", "classType", "hierarchyProperty", "obsoleteProperty", "obsoleteParent"]
+    patch '/:acronym/latest_submission' do
+      ont = Ontology.find(params["acronym"]).first
+      error 422, "You must provide an existing `acronym` to patch" if ont.nil?
+
+      submission = ont.latest_submission(status: :any)
+
+      submission.bring(*OntologySubmission.attributes)
+      populate_from_params(submission, params)
+      add_file_to_submission(ont, submission)
+
+      if submission.valid?
+        submission.save
+        if (params.keys & REQUIRES_REPROCESS).length > 0 || request_has_file?
+          cron = NcboCron::Models::OntologySubmissionParser.new
+          cron.queue_submission(submission, {all: true})
+        end
+      else
+        error 422, submission.errors
+      end
+
       halt 204
     end
 
@@ -117,7 +144,7 @@ class OntologiesController < ApplicationController
       restricted_download = LinkedData::OntologiesAPI.settings.restrict_download.include?(acronym)
       error 403, "License restrictions on download for #{acronym}" if restricted_download && !current_user.admin?
       error 403, "Ontology #{acronym} is not accessible to your user" if ont.restricted? && !ont.accessible?(current_user)
-      latest_submission = ont.latest_submission(status: :rdf) # Should resolve to latest successfully loaded submission
+      latest_submission = ont.latest_submission(status: :rdf)  # Should resolve to latest successfully loaded submission
       error 404, "There is no latest submission loaded for download" if latest_submission.nil?
       latest_submission.bring(:uploadFilePath)
 
@@ -163,18 +190,99 @@ class OntologiesController < ApplicationController
       end
 
       # ontology name must be unique
-      ont_names = Ontology.where.include(:name).to_a.map { |o| o.name }
+      ont_names = Ontology.where.include(:name).to_a.map {|o| o.name }
       if ont_names.include?(ont.name)
         error 409, "Ontology name is already in use by another ontology."
       end
 
       if ont.valid?
         ont.save
+        # Send an email to the administrator to warn him about the newly created ontology
+        begin
+          if !LinkedData.settings.admin_emails.nil? && !LinkedData.settings.admin_emails.empty?
+            LinkedData::Utils::Notifications.new_ontology(ont)
+          end
+        rescue Exception => e
+        end
       else
         error 422, ont.errors
       end
 
       reply 201, ont
+    end
+
+    namespace "/:acronym/admin" do
+
+      get '/log' do
+        ont = Ontology.find(params["acronym"]).first
+        entries = []
+
+        if ont
+          ont.bring(:viewingRestriction)
+          ont.bring(:administeredBy)
+          ont.bring(:acl)
+          check_write_access(ont)
+          latest_any = ont.latest_submission(status: :any)
+
+          if latest_any
+            log_path = "#{LinkedData.settings.repository_folder}/#{NcboCron::Models::OntologiesReport.new.log_file(params["acronym"], latest_any.submissionId.to_s)}"
+
+            if !log_path.empty? && File.file?(log_path)
+              file = File.open(log_path, "rb")
+              log_contents = file.read
+              file.close
+
+              severity_param = params['severity']&.split(',')&.map { |s| s.strip.upcase } # ['DEBUG', 'ERROR']
+              entries = parse_log(log_contents, severity_param)
+            end
+          end
+        end
+
+        reply entries
+      end
+
+      private
+
+      def parse_log(log_text, allowed_severities = nil)
+        valid_severities = %w[ERROR DEBUG INFO]
+
+        # Sanitize and validate allowed severities
+        allowed = Array(allowed_severities).map(&:upcase) & valid_severities
+        filter_enabled = !allowed.empty?
+
+        entries = []
+
+        log_text.each_line do |line|
+          line.strip!
+
+          # Match lines with timestamp
+          match =
+            line.match(/(?<level>[A-Z]), \[(?<timestamp>[^\]]+)\] +(?<severity>\w+) -- : (?<message>.+)/) ||
+              # Match legacy format (no timestamp)
+              line.match(/(?<severity>\w+) -- : (?<message>.+)/)
+
+          next unless match
+
+          entry = {
+            level: match[:level] || 'I',
+            timestamp: match.names.include?('timestamp') ? match[:timestamp].split('.').first : nil,
+            severity: match[:severity],
+            message: clean_message(match[:message])
+          }
+
+          entries << entry if !filter_enabled || allowed.include?(entry[:severity])
+        end
+        entries
+      end
+
+      def clean_message(raw)
+        raw
+          .gsub(/\A\[\[?"?/, '')       # strip leading [[ or [" etc
+          .gsub(/"?\]?\]?\z/, '')      # strip trailing ]]
+          .gsub('\\n', "\n")           # replace \n (escaped) with real newline
+          .gsub('\\t', "\t")           # replace \t (escaped) with real tab
+          .strip
+      end
     end
   end
 
@@ -191,7 +299,7 @@ class OntologiesController < ApplicationController
       else
         onts = Ontology.where.filter(Goo::Filter.new(:viewOf).unbound).include(Ontology.goo_attrs_to_load(includes_param)).to_a
       end
-      options = { also_include_views: allow_views, status: (params["include_status"] || "ANY") }
+      options = {also_include_views: allow_views, status: (params["include_status"] || "ANY")}
       subs = retrieve_latest_submissions(options)
       metrics_include = LinkedData::Models::Metric.goo_attrs_to_load(includes_param)
       LinkedData::Models::OntologySubmission.where.models(subs.values).include(metrics: metrics_include).all
@@ -207,7 +315,7 @@ class OntologiesController < ApplicationController
           metrics = nil
         end
 
-        resp << { ontology: ont, latest_submission: subs[ont.acronym], metrics: metrics }
+        resp << {ontology: ont, latest_submission: subs[ont.acronym], metrics: metrics}
       end
 
       reply resp

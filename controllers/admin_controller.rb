@@ -68,7 +68,7 @@ class AdminController < ApplicationController
       latest = ont.latest_submission(status: :any)
       error 404, "Ontology #{params["acronym"]} contains no submissions" if latest.nil?
       check_last_modified(latest)
-      latest.bring(*OntologySubmission.goo_attrs_to_load(includes_param))
+      latest.bring(*submission_include_params)
       NcboCron::Models::OntologySubmissionParser.new.queue_submission(latest, actions)
       halt 204
     end
@@ -84,7 +84,7 @@ class AdminController < ApplicationController
         latest = ont.latest_submission(status: :any)
       end
       check_last_modified(latest) if latest
-      latest.bring(*OntologySubmission.goo_attrs_to_load(includes_param)) if latest
+      latest.bring(*submission_include_params) if latest
       reply(latest || {})
     end
 
@@ -127,45 +127,78 @@ class AdminController < ApplicationController
       halt 204
     end
 
-    private
-
-    def process_long_operation(timeout, args)
-      process_id = "#{Time.now.to_i}_#{args[:name]}"
-      redis.setex process_id, timeout, MultiJson.dump("processing")
-      proc = Proc.new {
-        error = {}
-        begin
-          yield(args)
-        rescue Exception => e
-          msg = "Error #{args[:message]} - #{e.class}: #{e.message}"
-          puts "#{msg}\n#{e.backtrace.join("\n\t")}"
-          error[:errors] = [msg]
-        end
-        redis.setex process_id, timeout, MultiJson.dump(error.empty? ? "done" : error)
-      }
-
-      fork = true # set to false for testing
-      if fork
-        pid = Process.fork do
-          proc.call
-        end
-        Process.detach(pid)
-      else
-        proc.call
+    namespace "/search" do
+      get '/collections' do
+        conn = SOLR::SolrConnector.new(Goo.search_conf, '')
+        collections =  { collections: conn.fetch_all_collections}
+        reply(200, collections)
       end
-      process_id
-    end
 
-    def redis
-      Redis.new(host: Annotator.settings.annotator_redis_host, port: Annotator.settings.annotator_redis_port, timeout: 30)
-    end
+      get '/collections/:collection/schema' do
+        collection = params[:collection].to_sym
+        conn = SOLR::SolrConnector.new(Goo.search_conf, collection)
+        collection_schema = conn.fetch_schema
 
-    def redis_goo
-      Redis.new(host: LinkedData.settings.goo_redis_host, port: LinkedData.settings.goo_redis_port, timeout: 30)
-    end
+        reply(200, collection_schema)
+      end
 
-    def redis_http
-      Redis.new(host: LinkedData.settings.http_redis_host, port: LinkedData.settings.http_redis_port, timeout: 30)
+      post '/collections/:collection/schema/init' do
+        collection = params[:collection].to_sym
+        conn = SOLR::SolrConnector.new(Goo.search_conf, collection)
+        collection_schema = conn.init_schema
+        reply(200, collection_schema)
+      end
+
+
+      post '/collections/:collection/search' do
+        collection = params[:collection].to_sym
+
+        search_keys = %w[defType fq qf sort start rows fl stopwords lowercaseOperators]
+
+        search_params = params.select { |key, _|  search_keys.include?(key) }
+        search_query = params[:query] || params[:q]
+        search_query = search_query.blank? ? '*' : search_query
+        conn = SOLR::SolrConnector.new(Goo.search_conf, collection)
+        reply(200, conn.search(search_query, search_params).to_h)
+      end
+
+      post '/index_batch/:model_name' do
+        error 500, "model_name parameter not set" if params["model_name"].blank?
+
+        model = Goo.model_by_name(params["model_name"].to_sym)
+        error 500, "#{params["model_name"]} is not indexable" if model.nil? || !model.index_enabled?
+
+        all_attrs = get_attributes_to_include([:all], model)
+
+        collections = model.where.include(all_attrs).all
+        indexed = []
+        not_indexed = []
+        collections.each do |m|
+          begin
+            response = m.index.dig("responseHeader", "status")
+            if response.eql?(0)
+              indexed << m.id
+            else
+              not_indexed << m.id
+            end
+          rescue StandardError
+            not_indexed << m.id
+          end
+        end
+
+        if !indexed.empty?
+          msg = "Batch indexing for #{model.model_name} completed for"
+
+          if not_indexed.empty?
+            msg +=  " all models"
+          else
+            msg +=  " #{indexed.join(', ')} and not for the following #{not_indexed.join(', ')}, see logs for more details"
+          end
+          reply(200, msg)
+        else
+          reply(500, "Batch indexing for #{model.model_name} failed")
+        end
+      end
     end
 
   end
